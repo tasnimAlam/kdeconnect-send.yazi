@@ -21,15 +21,18 @@ Send selected files to your smartphone or other devices using KDE Connect. This 
 
 ## Installation
 
+### Using `ya pack`
+
 ```sh
 ya pack -a your-username/kdeconnect-send
 ```
 
-Or manually copy the plugin files to your Yazi plugins directory:
+### Using Git
+
+Clone the repository directly into your Yazi plugins directory:
 
 ```sh
-mkdir -p ~/.config/yazi/plugins/kdeconnect-send.yazi
-cp main.lua ~/.config/yazi/plugins/kdeconnect-send.yazi/
+git clone https://github.com/Deepak22903/kdeconnect-send.yazi.git ~/.config/yazi/plugins/kdeconnect-send.yazi
 ```
 
 ## Usage
