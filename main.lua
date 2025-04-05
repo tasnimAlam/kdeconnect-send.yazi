@@ -8,11 +8,34 @@ local function run_command(cmd_args)
 		ya.err("[kdeconnect-send] Spawn error: ", err) -- Error log
 		return nil, err
 	end
-	local output, err = child:wait_with_output()
-	if err then
-		ya.err("[kdeconnect-send] Wait error: ", err) -- Error log
-		return nil, err
+
+	-- Wait for command to finish and get output
+	local output, wait_err = child:wait_with_output()
+
+	-- Log the result immediately after waiting
+	ya.dbg("[kdeconnect-send] wait_with_output finished.")
+	if wait_err then
+		ya.err("[kdeconnect-send] Wait error received: ", wait_err) -- Error log
+		return nil, wait_err -- Return error if wait failed
 	end
+	if not output then
+		ya.err("[kdeconnect-send] Wait finished but output object is nil.")
+		return nil, Error("Command wait returned nil output")
+	end
+	ya.dbg("[kdeconnect-send] Command Status Success: ", output.status.success)
+	ya.dbg("[kdeconnect-send] Command Status Code: ", output.status.code)
+	ya.dbg("[kdeconnect-send] Command Stdout: ", output.stdout or "nil")
+	ya.dbg("[kdeconnect-send] Command Stderr: ", output.stderr or "nil")
+
+	-- Check stderr for "0 devices found" BEFORE checking success status
+	if output.stderr and output.stderr:match("^0 devices found") then
+		-- *** Removed ya.warn here to prevent hang ***
+		ya.dbg("[kdeconnect-send] Command reported 0 devices found in stderr. Returning empty.") -- Use dbg instead of warn
+		-- Return empty string and nil error to indicate success but no devices
+		return "", nil
+	end
+
+	-- Now check if the command failed generally (non-zero exit code)
 	if not output.status.success then
 		local error_msg = "Command failed with code "
 			.. tostring(output.status.code or "unknown")
@@ -24,32 +47,30 @@ local function run_command(cmd_args)
 		if output.stdout and #output.stdout > 0 then
 			error_msg = error_msg .. "\nStdout: " .. output.stdout
 		end
-		if output.stderr and output.stderr:match("No devices found") then
-			ya.warn("[kdeconnect-send] Command reported no devices found.")
-			return "", nil
-		end
 		ya.err("[kdeconnect-send] Command execution failed: ", error_msg) -- Error log
-		return nil, Error(error_msg)
+		return nil, Error(error_msg) -- Return nil, Error object
 	end
-	-- ya.dbg("[kdeconnect-send] Command stdout: ", output.stdout) -- Reduce log verbosity
-	return output.stdout, nil --
+
+	-- If successful and not "0 devices found", return stdout
+	return output.stdout, nil
 end
 
 -- Get selected files (requires sync context)
 local get_selected_files = ya.sync(function() --
-	ya.dbg("[kdeconnect-send] Entering get_selected_files sync block") -- Debug log
-	local selected_map = cx.active.selected --
+	-- Function content unchanged...
+	ya.dbg("[kdeconnect-send] Entering get_selected_files sync block")
+	local selected_map = cx.active.selected
 	local files = {}
-	for idx, url in pairs(selected_map) do -- Use idx, url
-		if url and url.is_regular then --
+	for idx, url in pairs(selected_map) do
+		if url and url.is_regular then
 			local file_path = tostring(url)
 			table.insert(files, file_path)
-		elseif url then --
+		elseif url then
 		else
-			ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx) -- Error log
+			ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
 		end
 	end
-	ya.dbg("[kdeconnect-send] Exiting get_selected_files sync block. Found files: ", #files) -- Debug log
+	ya.dbg("[kdeconnect-send] Exiting get_selected_files sync block. Found files: ", #files)
 	return files
 end)
 
@@ -68,7 +89,7 @@ return {
 		end
 		ya.dbg("[kdeconnect-send] Length of selected_files (#): ", len)
 
-		-- *** If no files selected, show notification and exit ***
+		-- If no files selected, show notification and exit
 		if len == 0 then
 			ya.dbg("[kdeconnect-send] Length is 0. No files selected. Showing notification.") -- Debug
 			ya.notify({
@@ -98,6 +119,8 @@ return {
 		-- 2. Get KDE Connect devices (Only runs if len > 0)
 		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -l'...") -- Debug log
 		local devices_output, err = run_command({ "kdeconnect-cli", "-l" })
+
+		-- Check for errors from run_command first
 		if err then
 			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.") -- Error log
 			ya.notify({
@@ -108,16 +131,21 @@ return {
 			})
 			return
 		end
+
+		-- Check if run_command returned empty string (meaning "0 devices found")
 		if not devices_output or devices_output == "" then
-			ya.warn("[kdeconnect-send] No connected devices reported by kdeconnect-cli. Exiting.") -- Warning log
+			ya.dbg("[kdeconnect-send] No connected devices reported by kdeconnect-cli. Exiting silently.") -- Debug log (changed from warn)
+
 			ya.notify({
-				title = "KDE Connect Error",
-				content = "No connected devices found.",
+				title = "KDE Connect Send",
+				content = "No connected devices reported by kdeconnect-cli",
 				level = "warn",
 				timeout = 5,
 			})
+			-- Removed ya.warn and ya.notify here previously
 			return
 		end
+		-- If we reach here, devices_output should contain the list of devices
 
 		-- 3. Parse devices
 		local devices = {}
@@ -142,14 +170,13 @@ return {
 			end
 		end
 
+		-- Check if any *reachable* devices were found after parsing
 		if not has_reachable then
-			ya.warn("[kdeconnect-send] No reachable devices found after parsing. Exiting. List:\n", device_list_str) -- Warning log
-			ya.notify({
-				title = "KDE Connect Send",
-				content = "No *reachable* devices found.\n" .. device_list_str,
-				level = "warn",
-				timeout = 8,
-			})
+			ya.dbg(
+				"[kdeconnect-send] No *reachable* devices found after parsing. Exiting silently. List:\n",
+				device_list_str
+			) -- Debug log (changed from warn)
+			-- Removed ya.warn and ya.notify here previously
 			return
 		end
 
@@ -172,18 +199,14 @@ return {
 				timeout = 3,
 			})
 		else
-			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user...") -- Debug log
+			-- Prompting logic (unchanged, might still hang on recv)
+			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user...")
 			local input_title = device_list_str .. "\nEnter Device ID to send " .. #selected_files .. " files to:"
 			local default_value = devices[1].id
-
-			local device_id_input = ya.input({
-				title = input_title,
-				value = default_value,
-				position = { "center", w = 70 },
-			})
-
+			local device_id_input =
+				ya.input({ title = input_title, value = default_value, position = { "center", w = 70 } })
 			if not device_id_input then
-				ya.err("[kdeconnect-send] Failed to create input prompt. Exiting.") -- Error log
+				ya.err("[kdeconnect-send] Failed to create input prompt. Exiting.")
 				ya.notify({
 					title = "Plugin Error",
 					content = "Could not create input prompt.",
@@ -192,13 +215,11 @@ return {
 				})
 				return
 			end
-			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input... (Might hang)") -- Debug log
-
+			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input... (Might hang)")
 			local received_id, event = device_id_input:recv()
 			ya.dbg("[kdeconnect-send] Input received. Device ID: ", received_id or "nil", " Event: ", event or "nil")
-
 			if event ~= 1 or not received_id or #received_id == 0 then
-				ya.warn("[kdeconnect-send] Input cancelled or invalid (event=" .. tostring(event) .. "). Exiting.") -- Warning log
+				ya.warn("[kdeconnect-send] Input cancelled or invalid (event=" .. tostring(event) .. "). Exiting.")
 				ya.notify({ title = "KDE Connect Send", content = "Send cancelled.", level = "info", timeout = 3 })
 				return
 			end
@@ -234,7 +255,7 @@ return {
 			"). Starting file send loop..."
 		) -- Debug log
 
-		-- 4. Send files
+		-- 4. Send files (unchanged)
 		local success_count = 0
 		local error_count = 0
 		for i, file_path in ipairs(selected_files) do
@@ -249,7 +270,6 @@ return {
 				target_device_name
 			) -- Debug log
 			local _, send_err = run_command({ "kdeconnect-cli", "--share", file_path, "--device", device_id })
-
 			if send_err then
 				error_count = error_count + 1
 				ya.err("[kdeconnect-send] Failed to send file ", file_path, " to ", device_id, ": ", tostring(send_err)) -- Error log
@@ -264,7 +284,7 @@ return {
 			end
 		end
 
-		-- 5. Final Notification
+		-- 5. Final Notification (unchanged)
 		local final_message =
 			string.format("Sent %d/%d files to %s.", success_count, #selected_files, target_device_name)
 		local final_level = "info"
