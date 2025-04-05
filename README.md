@@ -22,7 +22,7 @@ Send selected files to your smartphone or other devices using KDE Connect. This 
 ### Using `ya pack`
 
 ```sh
-ya pack -a your-username/kdeconnect-send
+ya pack -a Deepak22903/kdeconnect-send
 ```
 
 ### Using Git
