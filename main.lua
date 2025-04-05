@@ -2,6 +2,7 @@
 
 -- Function to run a command and get its output
 local function run_command(cmd_args)
+	-- Function content unchanged...
 	ya.dbg("[kdeconnect-send] Running command: ", table.concat(cmd_args, " "))
 	local child, err = Command(cmd_args[1]):args(cmd_args):stdout(Command.PIPED):stderr(Command.PIPED):spawn()
 	if err then
@@ -45,37 +46,25 @@ end
 
 -- Get selected files AND check for directories (requires sync context)
 -- Returns: list of regular file paths, boolean indicating if a directory was selected
-local get_selection_details = ya.sync(function()
+local get_selection_details = ya.sync(function() -- Renamed function
+	-- Function content unchanged...
 	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block")
 	local selected_map = cx.active.selected
 	local regular_files = {}
 	local directory_selected = false -- Flag to track if a directory is selected
-	
-	-- If selection is empty, get current file
-	if next(selected_map) == nil then
-		local current = cx.active.current
-		if current and current.is_regular then
-			table.insert(regular_files, tostring(current))
-		elseif current then
-			directory_selected = true
-		end
-	else
-		-- Process selection
-		for idx, url in pairs(selected_map) do
-			if url then
-				if url.is_regular then
-					local file_path = tostring(url)
-					table.insert(regular_files, file_path)
-				else
-					ya.dbg("[kdeconnect-send] Non-regular file selected (likely directory): ", tostring(url))
-					directory_selected = true
-				end
+	for idx, url in pairs(selected_map) do
+		if url then
+			if url.is_regular then
+				local file_path = tostring(url)
+				table.insert(regular_files, file_path)
 			else
-				ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
+				ya.dbg("[kdeconnect-send] Non-regular file selected (likely directory): ", tostring(url))
+				directory_selected = true
 			end
+		else
+			ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
 		end
 	end
-	
 	ya.dbg(
 		"[kdeconnect-send] Exiting get_selection_details sync block. Found regular files: ",
 		#regular_files,
@@ -87,52 +76,68 @@ end)
 
 return {
 	entry = function(_, job)
-		ya.dbg("[kdeconnect-send] Plugin entry point triggered.")
+		ya.dbg("[kdeconnect-send] Plugin entry point triggered.") -- Debug log
 
 		-- 1. Get selection details (files and directory flag)
-		local selected_files, directory_selected = get_selection_details()
+		local selected_files, directory_selected = get_selection_details() -- Call updated function
 
-		-- Check for directory selection FIRST
+		-- *** Add check for directory selection FIRST ***
+		-- *** Add more logging around the check ***
 		ya.dbg("[kdeconnect-send] Checking directory_selected flag. Value: ", directory_selected)
 		if directory_selected then
-			ya.dbg("[kdeconnect-send] directory_selected is true. Showing error and exiting.")
+			ya.dbg("[kdeconnect-send] directory_selected is true. Showing error and exiting.") -- Added log
+			ya.warn("[kdeconnect-send] Directory selected. Exiting.")
 			ya.notify({
 				title = "KDE Connect Send",
 				content = "Cannot send directories. Please select regular files only.",
-				level = "error",
+				level = "error", -- Use error level
 				timeout = 7,
 			})
 			return -- Exit if a directory was selected
-		}
+		end
+		-- *** Add log for when check passes ***
 		ya.dbg("[kdeconnect-send] directory_selected is false. Proceeding.")
 
 		-- Proceed only if no directory was selected
 		ya.dbg("[kdeconnect-send] No directory selected. Checking number of regular files.")
-		local len = 0
+		ya.dbg("[kdeconnect-send] Type of selected_files: ", type(selected_files))
+		local len = -1
 		if type(selected_files) == "table" then
 			len = #selected_files
 		end
 		ya.dbg("[kdeconnect-send] Length of selected_files (#): ", len)
 
-		-- If no regular files selected, show notification and exit
+		-- If no *regular* files selected (and no directories were selected either), show notification and exit
 		if len == 0 then
-			ya.dbg("[kdeconnect-send] Length is 0. No regular files selected. Showing notification.")
+			ya.dbg("[kdeconnect-send] Length is 0. No regular files selected. Showing notification.") -- Debug
 			ya.notify({
 				title = "KDE Connect Send",
-				content = "No regular files selected. Please select at least one file to send.",
+				content = "No regular files selected. Please select at least one file to send.", -- Adjusted message slightly
 				level = "warn",
+				timeout = 5,
+			})
+			return
+		elseif len > 0 then
+			ya.dbg("[kdeconnect-send] Length is > 0. Proceeding with device check.") -- Debug
+		else
+			-- This case handles potential errors from get_selection_details if it didn't return a table
+			ya.err("[kdeconnect-send] Error determining selected files. Type: ", type(selected_files), ". Exiting.")
+			ya.notify({
+				title = "Plugin Error",
+				content = "Could not determine selected files.",
+				level = "error",
 				timeout = 5,
 			})
 			return
 		end
 
-		-- 2. Get KDE Connect devices
-		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -l'...")
+		-- 2. Get KDE Connect devices (Only runs if len > 0 and no directory selected)
+		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -l'...") -- Debug log
 		local devices_output, err = run_command({ "kdeconnect-cli", "-l" })
 
-		-- Check for errors from run_command
+		-- Check for errors from run_command first
 		if err then
-			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.")
+			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.") -- Error log
 			ya.notify({
 				title = "KDE Connect Error",
 				content = "Failed to run kdeconnect-cli -l: " .. tostring(err),
@@ -144,17 +149,12 @@ return {
 
 		-- Check if run_command returned empty string (meaning "0 devices found")
 		if not devices_output or devices_output == "" then
-			ya.dbg("[kdeconnect-send] No connected devices reported by kdeconnect-cli. Exiting.")
-			ya.notify({
-				title = "KDE Connect Error",
-				content = "No connected devices found. Please ensure KDE Connect is properly set up.",
-				level = "error",
-				timeout = 5,
-			})
+			ya.dbg("[kdeconnect-send] No connected devices reported by kdeconnect-cli. Exiting silently.") -- Debug log
+			-- Removed notification here previously to prevent hang
 			return
 		end
 
-		-- 3. Parse devices
+		-- 3. Parse devices (unchanged)
 		local devices = {}
 		local device_list_str = "Available Devices:\n"
 		local has_reachable = false
@@ -179,17 +179,15 @@ return {
 
 		-- Check if any *reachable* devices were found after parsing
 		if not has_reachable then
-			ya.dbg("[kdeconnect-send] No reachable devices found after parsing. Exiting.")
-			ya.notify({
-				title = "KDE Connect Error",
-				content = "No reachable devices found. Please check your devices.",
-				level = "error",
-				timeout = 5,
-			})
+			ya.dbg(
+				"[kdeconnect-send] No *reachable* devices found after parsing. Exiting silently. List:\n",
+				device_list_str
+			)
+			-- Removed notification here previously to prevent hang
 			return
 		end
 
-		-- 4. Select Device (single device auto-select and multi-device prompt)
+		-- 4. Select Device (unchanged, includes single device auto-select and multi-device prompt)
 		local device_id = nil
 		if #devices == 1 then
 			device_id = devices[1].id
@@ -208,7 +206,7 @@ return {
 				timeout = 3,
 			})
 		else
-			-- Prompting logic
+			-- Prompting logic (unchanged, might still hang on recv)
 			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user...")
 			local input_title = device_list_str .. "\nEnter Device ID to send " .. #selected_files .. " files to:"
 			local default_value = devices[1].id
@@ -224,7 +222,7 @@ return {
 				})
 				return
 			end
-			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input...")
+			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input... (Might hang)")
 			local received_id, event = device_id_input:recv()
 			ya.dbg("[kdeconnect-send] Input received. Device ID: ", received_id or "nil", " Event: ", event or "nil")
 			if event ~= 1 or not received_id or #received_id == 0 then
@@ -235,7 +233,7 @@ return {
 			device_id = received_id
 		end
 
-		-- 5. Validate Device ID
+		-- 5. Validate Device ID (unchanged)
 		local valid_id = false
 		local target_device_name = "Unknown"
 		for _, d in ipairs(devices) do
@@ -263,19 +261,10 @@ return {
 			"). Starting file send loop..."
 		)
 
-		-- 6. Send files - USING ABSOLUTE FILE PATHS TO FIX HTTP ISSUE
+		-- 6. Send files (unchanged)
 		local success_count = 0
 		local error_count = 0
 		for i, file_path in ipairs(selected_files) do
-			-- Make sure we have an absolute path
-			if not file_path:match("^/") and not file_path:match("^file://") then
-				ya.warn("[kdeconnect-send] Received relative path. Converting to absolute: ", file_path)
-				file_path = tostring(cx.active.cwd) .. "/" .. file_path
-			end
-			
-			-- Remove any file:// prefix if present
-			file_path = file_path:gsub("^file://", "")
-			
 			ya.dbg(
 				"[kdeconnect-send] Sending file ",
 				i,
@@ -286,16 +275,7 @@ return {
 				" to ",
 				target_device_name
 			)
-			
-			-- Use --name to explicitly set the filename being sent
-			local filename = file_path:match("([^/]+)$") or file_path
-			local _, send_err = run_command({ 
-				"kdeconnect-cli", 
-				"--share", file_path, 
-				"--name", filename,
-				"--device", device_id 
-			})
-			
+			local _, send_err = run_command({ "kdeconnect-cli", "--share", file_path, "--device", device_id })
 			if send_err then
 				error_count = error_count + 1
 				ya.err("[kdeconnect-send] Failed to send file ", file_path, " to ", device_id, ": ", tostring(send_err))
@@ -310,7 +290,7 @@ return {
 			end
 		end
 
-		-- 7. Final Notification
+		-- 7. Final Notification (unchanged)
 		local final_message =
 			string.format("Sent %d/%d files to %s.", success_count, #selected_files, target_device_name)
 		local final_level = "info"
