@@ -44,12 +44,12 @@ run  = "plugin kdeconnect-send"
 desc = "Send selected files via KDE Connect"
 ```
 
-Make sure the <kbd>c</kbd> => <kbd>s</kbd> key combination is not used elsewhere.
+Make sure the <kbd>ctrl</kbd> => <kbd>s</kbd> key combination is not used elsewhere.
 
 ## How to Use
 
 1. Select one or more files in Yazi using your selection key (typically <kbd>Space</kbd>)
-2. Press <kbd>c</kbd> followed by <kbd>s</kbd> to activate the plugin
+2. Press <kbd>ctrl</kbd> followed by <kbd>s</kbd> to activate the plugin
 3. If multiple devices are available, select the device ID you want to send to
 4. The files will be sent and you'll receive a notification of the results
 
