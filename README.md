@@ -2,8 +2,6 @@
 
 Send selected files to your smartphone or other devices using KDE Connect. This plugin allows you to quickly share files from Yazi file manager directly to any KDE Connect-paired device.
 
-![Demo Animation](https://example.com/kdeconnect-send-demo.gif)
-
 ## Features
 
 - Select and send multiple files to KDE Connect devices
