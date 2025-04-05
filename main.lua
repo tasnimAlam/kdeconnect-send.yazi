@@ -1,198 +1,288 @@
--- phone_send.lua - Yazi plugin to send files to mobile phone via KDE Connect
--- Save this file to ~/.config/yazi/plugins/phone_send.lua
+-- ~/.config/yazi/plugins/kdeconnect-send.yazi/main.lua
 
-local ya = require("ya")
-local fs = require("fs")
-local ui = require("ui")
-
--- Configuration (modify these according to your setup)
-local config = {
-	-- For KDE Connect
-	kdeconnect_device = "", -- Your device ID, leave empty to prompt
-
-	-- General
-	notify = true, -- Show notifications when transfer completes
-	debug = true, -- Enable debug logging
-	log_file = os.getenv("HOME") .. "/.config/yazi/phone_send_debug.log", -- Debug log file path
-}
-
--- Debug logging function
-local function log_debug(message)
-	if not config.debug then
-		return
+-- Function to run a command and get its output
+local function run_command(cmd_args)
+	ya.dbg("[kdeconnect-send] Running command: ", table.concat(cmd_args, " ")) -- Debug log
+	local child, err = Command(cmd_args[1]):args(cmd_args):stdout(Command.PIPED):stderr(Command.PIPED):spawn()
+	if err then
+		ya.err("[kdeconnect-send] Spawn error: ", err) -- Error log
+		return nil, err
 	end
-
-	local log_file = io.open(config.log_file, "a")
-	if log_file then
-		local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-		log_file:write(string.format("[%s] %s\n", timestamp, message))
-		log_file:close()
+	local output, err = child:wait_with_output()
+	if err then
+		ya.err("[kdeconnect-send] Wait error: ", err) -- Error log
+		return nil, err
 	end
-end
-
--- Helper function to get file size in human-readable format
-local function human_size(bytes)
-	local units = { "B", "KB", "MB", "GB", "TB" }
-	local size = bytes
-	local unit_index = 1
-
-	while size > 1024 and unit_index < #units do
-		size = size / 1024
-		unit_index = unit_index + 1
-	end
-
-	return string.format("%.2f %s", size, units[unit_index])
-end
-
--- Helper function to show notification
-local function notify(message)
-	if config.notify then
-		log_debug("Sending notification: " .. message)
-		os.execute(string.format('notify-send "Yazi Phone Send" "%s"', message))
-	end
-end
-
--- Helper function to execute commands with output capture
-local function exec_command(cmd)
-	log_debug("Executing command: " .. cmd)
-
-	local handle = io.popen(cmd .. " 2>&1")
-	if not handle then
-		log_debug("Failed to open pipe for command")
-		return false, "Failed to execute command"
-	end
-
-	local output = handle:read("*a")
-	local success = handle:close()
-
-	log_debug("Command output: " .. output)
-	log_debug("Command success: " .. tostring(success))
-
-	return success, output
-end
-
--- Send file via KDE Connect
-local function send_via_kdeconnect(file_path, file_name)
-	log_debug("Starting KDE Connect transfer for: " .. file_path)
-
-	local device_id = config.kdeconnect_device
-
-	-- If no device ID is specified, get a list of devices
-	if device_id == "" then
-		log_debug("No device ID specified, fetching connected devices")
-
-		-- Get connected devices
-		local success, devices_output = exec_command("kdeconnect-cli -l --id-only")
-
-		if not success then
-			log_debug("Failed to list KDE Connect devices")
-			return false, "Failed to list KDE Connect devices"
+	if not output.status.success then
+		local error_msg = "Command failed with code "
+			.. tostring(output.status.code or "unknown")
+			.. ": "
+			.. cmd_args[1]
+		if output.stderr and #output.stderr > 0 then
+			error_msg = error_msg .. "\nStderr: " .. output.stderr
 		end
-
-		-- Parse device IDs
-		local devices = {}
-		for device in string.gmatch(devices_output, "[%w_%-]+") do
-			log_debug("Found device: " .. device)
-			table.insert(devices, device)
+		if output.stdout and #output.stdout > 0 then
+			error_msg = error_msg .. "\nStdout: " .. output.stdout
 		end
+		if output.stderr and output.stderr:match("No devices found") then
+			ya.warn("[kdeconnect-send] Command reported no devices found.")
+			return "", nil
+		end
+		ya.err("[kdeconnect-send] Command execution failed: ", error_msg) -- Error log
+		return nil, Error(error_msg)
+	end
+	-- ya.dbg("[kdeconnect-send] Command stdout: ", output.stdout) -- Reduce log verbosity
+	return output.stdout, nil --
+end
 
-		if #devices == 0 then
-			log_debug("No KDE Connect devices found")
-			return false, "No KDE Connect devices found"
-		elseif #devices == 1 then
-			device_id = devices[1]
-			log_debug("Using single device: " .. device_id)
+-- Get selected files (requires sync context)
+local get_selected_files = ya.sync(function() --
+	ya.dbg("[kdeconnect-send] Entering get_selected_files sync block") -- Debug log
+	local selected_map = cx.active.selected --
+	local files = {}
+	for idx, url in pairs(selected_map) do -- Use idx, url
+		if url and url.is_regular then --
+			local file_path = tostring(url)
+			table.insert(files, file_path)
+		elseif url then --
 		else
-			-- Interactive device selection
-			ui.notify("Multiple devices found. Please select one from the terminal.", "info")
-			for i, dev in ipairs(devices) do
-				-- Get device name for better identification
-				local cmd = string.format("kdeconnect-cli -d %s --name", dev)
-				local name_success, name_output = exec_command(cmd)
-				local device_name = name_success and name_output:gsub("\n", "") or dev
-				print(i .. ": " .. device_name .. " (" .. dev .. ")")
-			end
-
-			io.write("Select device (1-" .. #devices .. "): ")
-			local choice = tonumber(io.read())
-			if choice and choice >= 1 and choice <= #devices then
-				device_id = devices[choice]
-				log_debug("Selected device: " .. device_id)
-			else
-				log_debug("Invalid device selection")
-				return false, "Invalid device selection"
-			end
+			ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx) -- Error log
 		end
 	end
+	ya.dbg("[kdeconnect-send] Exiting get_selected_files sync block. Found files: ", #files) -- Debug log
+	return files
+end)
 
-	log_debug("Sending file via KDE Connect to device ID: " .. device_id)
-
-	local cmd = string.format('kdeconnect-cli -d %s --share "%s"', device_id, file_path)
-	local success, output = exec_command(cmd)
-
-	if success then
-		log_debug("File transfer successful")
-		return true, "File sent successfully via KDE Connect"
-	else
-		log_debug("File transfer failed: " .. (output or "unknown error"))
-		return false, "Failed to send via KDE Connect: " .. (output or "unknown error")
-	end
-end
-
--- Main function to send file
-local function send_to_phone()
-	log_debug("------ Starting new phone send operation ------")
-
-	local current = ya.manager.current
-	local file_path = current.current.path
-	local file_name = fs.basename(file_path)
-
-	log_debug("Selected file: " .. file_path)
-
-	-- Check if file exists and is readable
-	local file_stat = fs.stat(file_path)
-	if not file_stat then
-		log_debug("File does not exist or is not accessible")
-		ui.notify("File does not exist or is not accessible", "error")
-		return
-	end
-
-	-- Get file size
-	local size = file_stat.size
-	local readable_size = human_size(size)
-	log_debug("File size: " .. readable_size)
-
-	-- Ask for confirmation
-	ui.notify(string.format("Send '%s' (%s) to phone via KDE Connect?", file_name, readable_size), "info")
-	io.write("Confirm send? (y/N): ")
-	local confirm = io.read():lower()
-
-	if confirm ~= "y" and confirm ~= "yes" then
-		log_debug("Transfer cancelled by user")
-		ui.notify("Transfer cancelled", "info")
-		return
-	end
-
-	-- Attempt transfer
-	log_debug("Starting transfer")
-	local success, message = send_via_kdeconnect(file_path, file_name)
-
-	if success then
-		log_debug("Transfer completed successfully")
-		ui.notify(message, "success")
-		notify(message)
-	else
-		log_debug("Transfer failed: " .. message)
-		ui.notify(message, "error")
-		notify("Error: " .. message)
-	end
-
-	log_debug("------ Phone send operation complete ------")
-end
-
--- Register plugin with Yazi
 return {
-	entry = function(args)
-		send_to_phone()
+	entry = function(_, job)
+		ya.dbg("[kdeconnect-send] Plugin entry point triggered.") -- Debug log
+
+		-- 1. Get selected files
+		local selected_files = get_selected_files()
+
+		ya.dbg("[kdeconnect-send] Returned from get_selected_files.")
+		ya.dbg("[kdeconnect-send] Type of selected_files: ", type(selected_files))
+		local len = -1
+		if type(selected_files) == "table" then
+			len = #selected_files
+		end
+		ya.dbg("[kdeconnect-send] Length of selected_files (#): ", len)
+
+		-- *** If no files selected, show notification and exit ***
+		if len == 0 then
+			ya.dbg("[kdeconnect-send] Length is 0. No files selected. Showing notification.") -- Debug
+			ya.notify({
+				title = "KDE Connect Send",
+				content = "No files selected. Please select at least one file to send.",
+				level = "warn",
+				timeout = 5,
+			})
+			return
+		elseif len > 0 then
+			ya.dbg("[kdeconnect-send] Length is > 0. Proceeding with device check.") -- Debug
+		else
+			ya.err(
+				"[kdeconnect-send] Error determining selected files length or type was not table. Type: ",
+				type(selected_files),
+				". Exiting."
+			)
+			ya.notify({
+				title = "Plugin Error",
+				content = "Could not determine selected files.",
+				level = "error",
+				timeout = 5,
+			})
+			return
+		end
+
+		-- 2. Get KDE Connect devices (Only runs if len > 0)
+		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -l'...") -- Debug log
+		local devices_output, err = run_command({ "kdeconnect-cli", "-l" })
+		if err then
+			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.") -- Error log
+			ya.notify({
+				title = "KDE Connect Error",
+				content = "Failed to run kdeconnect-cli -l: " .. tostring(err),
+				level = "error",
+				timeout = 5,
+			})
+			return
+		end
+		if not devices_output or devices_output == "" then
+			ya.warn("[kdeconnect-send] No connected devices reported by kdeconnect-cli. Exiting.") -- Warning log
+			ya.notify({
+				title = "KDE Connect Error",
+				content = "No connected devices found.",
+				level = "warn",
+				timeout = 5,
+			})
+			return
+		end
+
+		-- 3. Parse devices
+		local devices = {}
+		local device_list_str = "Available Devices:\n"
+		local has_reachable = false
+		ya.dbg("[kdeconnect-send] Parsing device list (standard format)...") -- Debug log
+		local pattern = "^%-%s*(.+):%s*([%w_]+)%s*%((.-)%)$"
+		for line in devices_output:gmatch("[^\r\n]+") do
+			local name, id, status_line = line:match(pattern)
+			if id and name and status_line then
+				local is_reachable = status_line:match("reachable")
+				name = name:match("^%s*(.-)%s*$")
+				if is_reachable then
+					table.insert(devices, { id = id, name = name })
+					device_list_str = device_list_str .. "- " .. name .. " (ID: " .. id .. ")\n"
+					has_reachable = true
+				else
+					device_list_str = device_list_str .. "- " .. name .. " (ID: " .. id .. ") - Unreachable\n"
+				end
+			else
+				ya.warn("[kdeconnect-send] Could not parse device line with pattern: ", line) -- Warning log
+			end
+		end
+
+		if not has_reachable then
+			ya.warn("[kdeconnect-send] No reachable devices found after parsing. Exiting. List:\n", device_list_str) -- Warning log
+			ya.notify({
+				title = "KDE Connect Send",
+				content = "No *reachable* devices found.\n" .. device_list_str,
+				level = "warn",
+				timeout = 8,
+			})
+			return
+		end
+
+		-- Check number of reachable devices
+		local device_id = nil
+		if #devices == 1 then
+			device_id = devices[1].id
+			local device_name = devices[1].name
+			ya.dbg(
+				"[kdeconnect-send] Only one reachable device found: ",
+				device_name,
+				" (",
+				device_id,
+				"). Using automatically."
+			) -- Debug log
+			ya.notify({
+				title = "KDE Connect Send",
+				content = "Sending to only available device: " .. device_name,
+				level = "info",
+				timeout = 3,
+			})
+		else
+			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user...") -- Debug log
+			local input_title = device_list_str .. "\nEnter Device ID to send " .. #selected_files .. " files to:"
+			local default_value = devices[1].id
+
+			local device_id_input = ya.input({
+				title = input_title,
+				value = default_value,
+				position = { "center", w = 70 },
+			})
+
+			if not device_id_input then
+				ya.err("[kdeconnect-send] Failed to create input prompt. Exiting.") -- Error log
+				ya.notify({
+					title = "Plugin Error",
+					content = "Could not create input prompt.",
+					level = "error",
+					timeout = 5,
+				})
+				return
+			end
+			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input... (Might hang)") -- Debug log
+
+			local received_id, event = device_id_input:recv()
+			ya.dbg("[kdeconnect-send] Input received. Device ID: ", received_id or "nil", " Event: ", event or "nil")
+
+			if event ~= 1 or not received_id or #received_id == 0 then
+				ya.warn("[kdeconnect-send] Input cancelled or invalid (event=" .. tostring(event) .. "). Exiting.") -- Warning log
+				ya.notify({ title = "KDE Connect Send", content = "Send cancelled.", level = "info", timeout = 3 })
+				return
+			end
+			device_id = received_id
+		end
+
+		-- Validate the chosen/entered device_id
+		local valid_id = false
+		local target_device_name = "Unknown"
+		for _, d in ipairs(devices) do
+			if d.id == device_id then
+				valid_id = true
+				target_device_name = d.name
+				break
+			end
+		end
+
+		if not valid_id then
+			ya.err("[kdeconnect-send] Invalid or unreachable Device ID selected: ", device_id, ". Exiting.") -- Error log
+			ya.notify({
+				title = "KDE Connect Send",
+				content = "Invalid or unreachable Device ID selected: " .. device_id,
+				level = "error",
+				timeout = 5,
+			})
+			return
+		end
+		ya.dbg(
+			"[kdeconnect-send] Device ID validated: ",
+			device_id,
+			" (",
+			target_device_name,
+			"). Starting file send loop..."
+		) -- Debug log
+
+		-- 4. Send files
+		local success_count = 0
+		local error_count = 0
+		for i, file_path in ipairs(selected_files) do
+			ya.dbg(
+				"[kdeconnect-send] Sending file ",
+				i,
+				"/",
+				#selected_files,
+				": ",
+				file_path,
+				" to ",
+				target_device_name
+			) -- Debug log
+			local _, send_err = run_command({ "kdeconnect-cli", "--share", file_path, "--device", device_id })
+
+			if send_err then
+				error_count = error_count + 1
+				ya.err("[kdeconnect-send] Failed to send file ", file_path, " to ", device_id, ": ", tostring(send_err)) -- Error log
+				ya.notify({
+					title = "KDE Connect Error",
+					content = "Failed to send: " .. file_path .. "\n" .. tostring(send_err),
+					level = "error",
+					timeout = 5,
+				})
+			else
+				success_count = success_count + 1
+			end
+		end
+
+		-- 5. Final Notification
+		local final_message =
+			string.format("Sent %d/%d files to %s.", success_count, #selected_files, target_device_name)
+		local final_level = "info"
+		if error_count > 0 then
+			final_message = string.format(
+				"Sent %d/%d files to %s. %d failed.",
+				success_count,
+				#selected_files,
+				target_device_name,
+				error_count
+			)
+			final_level = "warn"
+		end
+		if success_count == 0 and error_count > 0 then
+			final_level = "error"
+		end
+		ya.dbg("[kdeconnect-send] Send process completed. Success: ", success_count, " Failed: ", error_count) -- Debug log
+		ya.notify({ title = "KDE Connect Send Complete", content = final_message, level = final_level, timeout = 5 })
+		ya.dbg("[kdeconnect-send] Plugin execution finished.") -- Debug log
 	end,
 }
