@@ -47,21 +47,17 @@ end
 -- Get selected files AND check for directories (requires sync context)
 -- Returns: list of regular file paths, boolean indicating if a directory was selected
 local get_selection_details = ya.sync(function() -- Renamed function
+	-- Function content unchanged...
 	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block")
 	local selected_map = cx.active.selected
 	local regular_files = {}
 	local directory_selected = false -- Flag to track if a directory is selected
-
 	for idx, url in pairs(selected_map) do
 		if url then
-			-- url.is_regular is the simplest check available in sync context
-			-- We assume if it's not regular, it might be a directory we don't want to send.
 			if url.is_regular then
 				local file_path = tostring(url)
 				table.insert(regular_files, file_path)
 			else
-				-- If it's not a regular file, set the directory flag
-				-- We could check url.cha.is_dir but that requires async fs.cha()
 				ya.dbg("[kdeconnect-send] Non-regular file selected (likely directory): ", tostring(url))
 				directory_selected = true
 			end
@@ -75,7 +71,6 @@ local get_selection_details = ya.sync(function() -- Renamed function
 		" Directory selected: ",
 		directory_selected
 	)
-	-- Return both the list and the flag
 	return regular_files, directory_selected
 end)
 
@@ -87,7 +82,10 @@ return {
 		local selected_files, directory_selected = get_selection_details() -- Call updated function
 
 		-- *** Add check for directory selection FIRST ***
+		-- *** Add more logging around the check ***
+		ya.dbg("[kdeconnect-send] Checking directory_selected flag. Value: ", directory_selected)
 		if directory_selected then
+			ya.dbg("[kdeconnect-send] directory_selected is true. Showing error and exiting.") -- Added log
 			ya.warn("[kdeconnect-send] Directory selected. Exiting.")
 			ya.notify({
 				title = "KDE Connect Send",
@@ -97,6 +95,8 @@ return {
 			})
 			return -- Exit if a directory was selected
 		end
+		-- *** Add log for when check passes ***
+		ya.dbg("[kdeconnect-send] directory_selected is false. Proceeding.")
 
 		-- Proceed only if no directory was selected
 		ya.dbg("[kdeconnect-send] No directory selected. Checking number of regular files.")
