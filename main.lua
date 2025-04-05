@@ -177,6 +177,12 @@ return {
 				device_list_str
 			) -- Debug log (changed from warn)
 			-- Removed ya.warn and ya.notify here previously
+			ya.notify({
+				title = "KDE Connect Send",
+				content = "No *reachable* devices found after parsing",
+				level = "warn",
+				timeout = 5,
+			})
 			return
 		end
 
