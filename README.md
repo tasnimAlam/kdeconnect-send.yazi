@@ -39,7 +39,7 @@ Add this to your `~/.config/yazi/keymap.toml`:
 
 ```toml
 [[manager.prepend_keymap]]
-on   = [ "c", "s" ]
+on   = [ "<C-s>" ]
 run  = "plugin kdeconnect-send"
 desc = "Send selected files via KDE Connect"
 ```
