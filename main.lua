@@ -187,81 +187,81 @@ return {
 			return
 		end
 
-		-- 4. Select Device (unchanged, includes single device auto-select and multi-device prompt)
+		-- 4. Select Device
 		local device_id = nil
+		local target_device_name = "Unknown" -- Initialize target_device_name here
+
 		if #devices == 1 then
 			device_id = devices[1].id
-			local device_name = devices[1].name
+			target_device_name = devices[1].name -- Get name for single device case
 			ya.dbg(
 				"[kdeconnect-send] Only one reachable device found: ",
-				device_name,
+				target_device_name,
 				" (",
 				device_id,
 				"). Using automatically."
 			)
 			ya.notify({
 				title = "KDE Connect Send",
-				content = "Sending to only available device: " .. device_name,
+				content = "Sending to only available device: " .. target_device_name,
 				level = "info",
 				timeout = 3,
 			})
 		else
-			-- Prompting logic (unchanged, might still hang on recv)
-			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user...")
-			local input_title = device_list_str .. "\nEnter Device ID to send " .. #selected_files .. " files to:"
-			local default_value = devices[1].id
-			local device_id_input =
-				ya.input({ title = input_title, value = default_value, position = { "center", w = 70 } })
-			if not device_id_input then
-				ya.err("[kdeconnect-send] Failed to create input prompt. Exiting.")
-				ya.notify({
-					title = "Plugin Error",
-					content = "Could not create input prompt.",
-					level = "error",
-					timeout = 5,
+			ya.dbg("[kdeconnect-send] Multiple reachable devices found. Prompting user with ya.which...")
+
+			-- Prepare candidates for ya.which
+			local device_choices = {}
+			for i, device in ipairs(devices) do
+				table.insert(device_choices, {
+					-- Use index 'i' as the 'on' key for selection (ya.which returns the index)
+					on = tostring(i),
+					-- Display Name and ID in the description
+					desc = string.format("%s (%s)", device.name, device.id),
 				})
-				return
 			end
-			ya.dbg("[kdeconnect-send] Input prompt created. Waiting for user input... (Might hang)")
-			local received_id, event = device_id_input:recv()
-			ya.dbg("[kdeconnect-send] Input received. Device ID: ", received_id or "nil", " Event: ", event or "nil")
-			if event ~= 1 or not received_id or #received_id == 0 then
-				ya.warn("[kdeconnect-send] Input cancelled or invalid (event=" .. tostring(event) .. "). Exiting.")
+
+			-- Add a cancel option
+			table.insert(device_choices, { on = "q", desc = "Cancel" }) -- Or use "<Esc>", etc.
+
+			-- Prompt the user to choose a device index
+			local selected_index = ya.which({
+				cands = device_choices,
+				-- silent = false, -- Optional: Show key hints overlay
+			})
+			ya.dbg("[kdeconnect-send] ya.which returned index: ", selected_index or "nil")
+
+			-- Check if the user cancelled or selected the cancel option
+			if not selected_index or selected_index > #devices then -- Check if index is out of bounds (i.e., Cancel was chosen)
+				ya.warn("[kdeconnect-send] Device selection cancelled by user.")
 				ya.notify({ title = "KDE Connect Send", content = "Send cancelled.", level = "info", timeout = 3 })
 				return
 			end
-			device_id = received_id
+
+			-- Get the device ID and name based on the selected index
+			device_id = devices[selected_index].id
+			target_device_name = devices[selected_index].name
+			ya.dbg(
+				"[kdeconnect-send] User selected device index ",
+				selected_index,
+				": ",
+				target_device_name,
+				" (",
+				device_id,
+				")"
+			)
 		end
 
-		-- 5. Validate Device ID (unchanged)
-		local valid_id = false
-		local target_device_name = "Unknown"
-		for _, d in ipairs(devices) do
-			if d.id == device_id then
-				valid_id = true
-				target_device_name = d.name
-				break
-			end
-		end
-		if not valid_id then
-			ya.err("[kdeconnect-send] Invalid or unreachable Device ID selected: ", device_id, ". Exiting.")
-			ya.notify({
-				title = "KDE Connect Send",
-				content = "Invalid or unreachable Device ID selected: " .. device_id,
-				level = "error",
-				timeout = 5,
-			})
-			return
-		end
+		-- 5. Validate Device ID (This part should now use the already validated device_id and target_device_name)
 		ya.dbg(
-			"[kdeconnect-send] Device ID validated: ",
+			"[kdeconnect-send] Proceeding with selected device: ",
 			device_id,
 			" (",
 			target_device_name,
 			"). Starting file send loop..."
 		)
 
-		-- 6. Send files (unchanged)
+		-- 6. Send files ... (rest of the code remains the same)
 		local success_count = 0
 		local error_count = 0
 		for i, file_path in ipairs(selected_files) do
