@@ -2,9 +2,27 @@
 
 -- Function to run a command and get its output
 local function run_command(cmd_args)
-	-- Function content unchanged...
 	ya.dbg("[kdeconnect-send] Running command: ", table.concat(cmd_args, " "))
-	local child, err = Command(cmd_args[1]):args(cmd_args):stdout(Command.PIPED):stderr(Command.PIPED):spawn()
+
+	-- *** MODIFIED PART START ***
+	-- Separate the command from the arguments
+	local command_name = cmd_args[1]
+	local arguments = {}
+	for i = 2, #cmd_args do
+		table.insert(arguments, cmd_args[i])
+	end
+	ya.dbg("[kdeconnect-send] Command Name: ", command_name)
+	ya.dbg("[kdeconnect-send] Arguments Table: ", arguments) -- Debug log for arguments
+
+	-- Build the command correctly
+	local cmd_builder = Command(command_name)
+	if #arguments > 0 then
+		cmd_builder:args(arguments) -- Pass only the arguments table
+	end
+
+	local child, err = cmd_builder:stdout(Command.PIPED):stderr(Command.PIPED):spawn()
+	-- *** MODIFIED PART END ***
+
 	if err then
 		ya.err("[kdeconnect-send] Spawn error: ", err)
 		return nil, err
@@ -24,14 +42,14 @@ local function run_command(cmd_args)
 	ya.dbg("[kdeconnect-send] Command Stdout: ", output.stdout or "nil")
 	ya.dbg("[kdeconnect-send] Command Stderr: ", output.stderr or "nil")
 	if output.stderr and output.stderr:match("^0 devices found") then
-		ya.dbg("[kdeconnect-send] Command reported 0 devices found in stderr. Returning empty.")
-		return "", nil
+		ya.dbg("[kdeconnect-send] Command reported 0 devices found in stderr. Returning empty.") -- source: 2
+		return "", nil -- source: 2
 	end
 	if not output.status.success then
 		local error_msg = "Command failed with code "
 			.. tostring(output.status.code or "unknown")
 			.. ": "
-			.. cmd_args[1]
+			.. command_name -- Use command_name here
 		if output.stderr and #output.stderr > 0 then
 			error_msg = error_msg .. "\nStderr: " .. output.stderr
 		end
