@@ -132,15 +132,15 @@ return {
 		end
 
 		-- 2. Get KDE Connect devices (Only runs if len > 0 and no directory selected)
-		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -l'...") -- Debug log
-		local devices_output, err = run_command({ "kdeconnect-cli", "-l" })
+		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnectcli -a'...") -- Debug log
+		local devices_output, err = run_command({ "kdeconnect-cli", "-a" })
 
 		-- Check for errors from run_command first
 		if err then
 			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.") -- Error log
 			ya.notify({
 				title = "KDE Connect Error",
-				content = "Failed to run kdeconnect-cli -l: " .. tostring(err),
+				content = "Failed to run kdeconnectcli -a: " .. tostring(err),
 				level = "error",
 				timeout = 5,
 			})
