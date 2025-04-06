@@ -1,6 +1,6 @@
 -- ~/.config/yazi/plugins/kdeconnect-send.yazi/main.lua
 
--- Function to run a command and get its output
+-- Function to run a command and get its output (Corrected Args Handling)
 local function run_command(cmd_args)
 	ya.dbg("[kdeconnect-send] Running command: ", table.concat(cmd_args, " "))
 
@@ -68,10 +68,10 @@ local function run_command(cmd_args)
 	return output.stdout, nil
 end
 
--- IMPROVED: Get selected files and check for directories
--- More reliable directory detection
+-- Get selected files AND check for directories (Reverted Sync Check with Logging)
+-- Returns: list of regular file paths (strings), boolean indicating if a directory was selected
 local get_selection_details = ya.sync(function()
-	ya.dbg("[kdeconnect-send] Entering improved get_selection_details sync block")
+	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block (Reverted Check)")
 	local selected_map = cx.active.selected
 	if not selected_map then
 		ya.err("[kdeconnect-send] cx.active.selected is nil!")
@@ -86,49 +86,39 @@ local get_selection_details = ya.sync(function()
 		for idx, url in pairs(selected_map) do
 			ya.dbg("[kdeconnect-send] Checking selection index: ", idx)
 			if url then
-				-- IMPROVED: More thorough checks for directory detection
-				ya.dbg("[kdeconnect-send] URL type: ", type(url))
+				-- Check if url.is_regular exists before accessing it
+				local is_regular_status = url.is_regular
+				ya.dbg("[kdeconnect-send] URL: ", tostring(url), " Is Regular: ", is_regular_status)
 
-				-- Check if url has the is_dir property
-				local is_dir = url.is_dir
-				local is_regular = url.is_regular
-
-				ya.dbg("[kdeconnect-send] URL: ", tostring(url), " Is Regular: ", is_regular, " Is Dir: ", is_dir)
-
-				-- FIXED: Enhanced directory detection logic
-				if is_dir == true then
-					ya.dbg("[kdeconnect-send] Directory detected: ", tostring(url))
-					directory_selected = true
-				elseif is_regular == true then
+				if is_regular_status == true then -- Explicitly check for true
 					local file_path = tostring(url)
 					table.insert(regular_files, file_path)
+				elseif is_regular_status == false then -- Explicitly check for false
+					ya.dbg("[kdeconnect-send] Non-regular file selected (likely directory): ", tostring(url))
+					directory_selected = true
+					-- Optional: uncomment break if we only need to know if *any* directory exists
+					-- break
 				else
-					-- If can't determine clearly, extra check for directory-like properties
-					local path_str = tostring(url)
-
-					-- Try to use the command to check if it's a directory (async)
-					ya.dbg("[kdeconnect-send] Neither is_dir nor is_regular is definitive. Extra check for: ", path_str)
-
-					-- Fallback check - if not clearly regular, treat as potential directory for safety
-					if is_regular ~= true then
-						ya.warn(
-							"[kdeconnect-send] Conservative approach: treating ambiguous item as directory: ",
-							path_str
-						)
-						directory_selected = true
-					else
-						table.insert(regular_files, path_str)
-					end
+					-- is_regular might be nil if URL properties couldn't be determined
+					ya.warn(
+						"[kdeconnect-send] url.is_regular is neither true nor false (is nil?) for URL: ",
+						tostring(url),
+						". Treating as potential directory."
+					)
+					directory_selected = true
+					-- break
 				end
 			else
 				ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
+				-- Decide if a nil URL should be treated as an error or skipped
 			end
 		end
 	end)
 
 	if not success then
 		ya.err("[kdeconnect-send] Error during pairs(selected_map) iteration: ", err)
-		return {}, false
+		-- Decide how to handle this: return error? return empty?
+		return {}, false -- Example: return empty, no directory detected
 	end
 
 	ya.dbg(
@@ -140,30 +130,11 @@ local get_selection_details = ya.sync(function()
 	return regular_files, directory_selected
 end)
 
--- ADDED: Secondary directory check using stat
-local function double_check_for_directories(file_paths)
-	ya.dbg("[kdeconnect-send] Running secondary directory check on", #file_paths, "paths")
-
-	for _, path in ipairs(file_paths) do
-		-- Try to use the 'test' command to check if it's a directory
-		local _, dir_err = run_command({ "test", "-d", path })
-
-		-- If test -d returns 0 (success/true), it's a directory
-		if dir_err == nil then
-			ya.dbg("[kdeconnect-send] Secondary check found directory:", path)
-			return true -- Found at least one directory
-		end
-	end
-
-	ya.dbg("[kdeconnect-send] Secondary check complete - no directories found")
-	return false
-end
-
 return {
 	entry = function(_, job)
 		ya.dbg("[kdeconnect-send] Plugin entry point triggered.")
 
-		-- 1. Get selection details (files and directory flag) using improved check
+		-- 1. Get selection details (files and directory flag) using Reverted Sync Check
 		local selected_files, directory_selected = get_selection_details()
 
 		-- Handle potential errors if get_selection_details couldn't determine selection
@@ -173,35 +144,29 @@ return {
 			return
 		end
 
-		-- 2. IMPROVED: Double-check for directories using secondary method
-		local found_dir = directory_selected
-
-		-- If primary check didn't find directories, try secondary check
-		if not found_dir and #selected_files > 0 then
-			found_dir = double_check_for_directories(selected_files)
-		end
-
-		ya.dbg("[kdeconnect-send] Directory detected: ", found_dir)
-
-		if found_dir then
-			ya.dbg("[kdeconnect-send] directory detected. Showing error and exiting.")
+		-- 2. *** REVERTED DIRECTORY CHECK LOGIC ***
+		ya.dbg("[kdeconnect-send] Checking directory_selected flag. Value: ", directory_selected)
+		if directory_selected then
+			ya.dbg("[kdeconnect-send] directory_selected is true (from sync check). Showing error and exiting.")
 			ya.notify({
 				title = "KDE Connect Send",
 				content = "Cannot send directories. Please select regular files only.",
 				level = "error",
 				timeout = 7,
 			})
-			return -- Exit if a directory was detected
+			return -- Exit if a directory was detected by the sync check
 		end
+		ya.dbg("[kdeconnect-send] directory_selected is false (from sync check). Proceeding.")
 
-		ya.dbg("[kdeconnect-send] No directories detected. Proceeding.")
-
-		-- 3. Proceed only if no directory was detected and files exist
+		-- 3. Proceed only if no directory was selected and files exist
 		ya.dbg("[kdeconnect-send] Checking number of regular files.")
 		local len = #selected_files
 		ya.dbg("[kdeconnect-send] Length of selected_files (#): ", len)
 
 		if len == 0 then
+			-- This case now means either truly no regular files were selected,
+			-- or only directories were selected (and handled above),
+			-- or an error occurred in get_selection_details.
 			ya.dbg("[kdeconnect-send] Length is 0. No regular files to send.")
 			-- Check if directory_selected was false - means no files were selected at all.
 			if not directory_selected then
