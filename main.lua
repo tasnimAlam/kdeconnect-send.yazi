@@ -1,6 +1,6 @@
 -- ~/.config/yazi/plugins/kdeconnect-send.yazi/main.lua
 
--- Function to run a command and get its output (Corrected Version)
+-- Function to run a command and get its output (Corrected Args Handling)
 local function run_command(cmd_args)
 	ya.dbg("[kdeconnect-send] Running command: ", table.concat(cmd_args, " "))
 
@@ -11,12 +11,12 @@ local function run_command(cmd_args)
 		table.insert(arguments, cmd_args[i])
 	end
 	ya.dbg("[kdeconnect-send] Command Name: ", command_name)
-	ya.dbg("[kdeconnect-send] Arguments Table: ", arguments) -- Debug log for arguments
+	ya.dbg("[kdeconnect-send] Arguments Table: ", arguments)
 
 	-- Build the command correctly
 	local cmd_builder = Command(command_name)
 	if #arguments > 0 then
-		cmd_builder:args(arguments) -- Pass only the arguments table
+		cmd_builder:args(arguments)
 	end
 
 	local child, err = cmd_builder:stdout(Command.PIPED):stderr(Command.PIPED):spawn()
@@ -39,10 +39,11 @@ local function run_command(cmd_args)
 	ya.dbg("[kdeconnect-send] Command Status Code: ", output.status.code)
 	ya.dbg("[kdeconnect-send] Command Stdout: ", output.stdout or "nil")
 	ya.dbg("[kdeconnect-send] Command Stderr: ", output.stderr or "nil")
+
 	-- Note: The check for "0 devices found" might need adjustment depending on the output format of 'kdeconnect-cli -a'
 	if output.stderr and output.stderr:match("^0 devices found") then
-		ya.dbg("[kdeconnect-send] Command reported 0 devices found in stderr. Returning empty.") -- source: 2
-		return "", nil -- source: 2
+		ya.dbg("[kdeconnect-send] Command reported 0 devices found in stderr. Returning empty.")
+		return "", nil
 	end
 	-- Also check stdout for potential "no devices" messages if -a uses stdout differently
 	if output.stdout and output.stdout:match("no available devices found") then -- Example check, adjust if needed
@@ -54,7 +55,7 @@ local function run_command(cmd_args)
 		local error_msg = "Command failed with code "
 			.. tostring(output.status.code or "unknown")
 			.. ": "
-			.. command_name -- Use command_name here
+			.. command_name
 		if output.stderr and #output.stderr > 0 then
 			error_msg = error_msg .. "\nStderr: " .. output.stderr
 		end
@@ -67,102 +68,138 @@ local function run_command(cmd_args)
 	return output.stdout, nil
 end
 
--- Get selected file paths (sync context required for cx.active.selected)
--- Returns: list of selected file paths (strings)
-local get_selected_paths = ya.sync(function()
-	ya.dbg("[kdeconnect-send] Entering get_selected_paths sync block")
+-- Get selected files AND check for directories (Reverted Sync Check with Logging)
+-- Returns: list of regular file paths (strings), boolean indicating if a directory was selected
+local get_selection_details = ya.sync(function()
+	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block (Reverted Check)")
 	local selected_map = cx.active.selected
-	local paths = {}
-	for idx, url in pairs(selected_map) do
-		if url then
-			table.insert(paths, tostring(url)) -- Store path as string
-		else
-			ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
-		end
+	if not selected_map then
+		ya.err("[kdeconnect-send] cx.active.selected is nil!")
+		return {}, false -- Return empty table and false if selection map is nil
 	end
-	ya.dbg("[kdeconnect-send] Exiting get_selected_paths sync block. Found paths: ", #paths)
-	return paths
+
+	local regular_files = {}
+	local directory_selected = false
+
+	-- Use pcall to safely iterate in case pairs() or accessing selected_map fails
+	local success, err = pcall(function()
+		for idx, url in pairs(selected_map) do
+			ya.dbg("[kdeconnect-send] Checking selection index: ", idx)
+			if url then
+				-- Check if url.is_regular exists before accessing it
+				local is_regular_status = url.is_regular
+				ya.dbg("[kdeconnect-send] URL: ", tostring(url), " Is Regular: ", is_regular_status)
+
+				if is_regular_status == true then -- Explicitly check for true
+					local file_path = tostring(url)
+					table.insert(regular_files, file_path)
+				elseif is_regular_status == false then -- Explicitly check for false
+					ya.dbg("[kdeconnect-send] Non-regular file selected (likely directory): ", tostring(url))
+					directory_selected = true
+					-- Optional: uncomment break if we only need to know if *any* directory exists
+					-- break
+				else
+					-- is_regular might be nil if URL properties couldn't be determined
+					ya.warn(
+						"[kdeconnect-send] url.is_regular is neither true nor false (is nil?) for URL: ",
+						tostring(url),
+						". Treating as potential directory."
+					)
+					directory_selected = true
+					-- break
+				end
+			else
+				ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
+				-- Decide if a nil URL should be treated as an error or skipped
+			end
+		end
+	end)
+
+	if not success then
+		ya.err("[kdeconnect-send] Error during pairs(selected_map) iteration: ", err)
+		-- Decide how to handle this: return error? return empty?
+		return {}, false -- Example: return empty, no directory detected
+	end
+
+	ya.dbg(
+		"[kdeconnect-send] Exiting get_selection_details sync block. Found regular files: ",
+		#regular_files,
+		" Directory selected: ",
+		directory_selected
+	)
+	return regular_files, directory_selected
 end)
 
 return {
 	entry = function(_, job)
 		ya.dbg("[kdeconnect-send] Plugin entry point triggered.")
 
-		-- 1. Get selected paths (Sync)
-		local selected_paths = get_selected_paths() -- Use the modified get_selected_paths function
+		-- 1. Get selection details (files and directory flag) using Reverted Sync Check
+		local selected_files, directory_selected = get_selection_details()
 
-		-- Check if anything was selected
-		if #selected_paths == 0 then
-			ya.dbg("[kdeconnect-send] No files or directories selected.")
-			ya.notify({
-				title = "KDE Connect Send",
-				content = "No files or directories selected.",
-				level = "warn",
-				timeout = 5,
-			})
+		-- Handle potential errors if get_selection_details couldn't determine selection
+		if not selected_files then
+			ya.err("[kdeconnect-send] Failed to get selection details.")
+			ya.notify({ title = "Plugin Error", content = "Could not read selection.", level = "error", timeout = 5 })
 			return
 		end
-		ya.dbg("[kdeconnect-send] Selected paths: ", selected_paths)
 
-		-- 2. *** NEW ASYNC DIRECTORY CHECK ***
-		local contains_directory = false
-		ya.dbg("[kdeconnect-send] Starting async directory check...")
-		for i, path_str in ipairs(selected_paths) do
-			local url = Url(path_str) -- Create Url object for fs.cha
-			local cha, err = fs.cha(url, false) -- false = do not follow symlinks for the check
-
-			if err then
-				ya.err("[kdeconnect-send] Error checking file type for ", path_str, ": ", tostring(err))
-			-- Optionally notify user about the error and exit, or just log and continue
-			-- ya.notify({ title = "Plugin Error", content = "Could not check file type for: "..path_str, level = "error", timeout = 5 })
-			-- return
-			elseif cha and cha.is_dir then -- Check if fs.cha returned characteristics and if it's a directory [cite: 199]
-				ya.warn("[kdeconnect-send] Directory selected: ", path_str)
-				contains_directory = true
-				break -- Exit loop early if a directory is found
-			else
-				-- It's either a file or cha was nil (maybe a broken link, etc.)
-				-- For sending purposes, we treat non-directories as sendable for now.
-				ya.dbg("[kdeconnect-send] Path is not confirmed as a directory: ", path_str)
-			end
-		end
-		ya.dbg("[kdeconnect-send] Async directory check finished. contains_directory: ", contains_directory)
-
-		-- 3. Exit if a directory was found
-		if contains_directory then
+		-- 2. *** REVERTED DIRECTORY CHECK LOGIC ***
+		ya.dbg("[kdeconnect-send] Checking directory_selected flag. Value: ", directory_selected)
+		if directory_selected then
+			ya.dbg("[kdeconnect-send] directory_selected is true (from sync check). Showing error and exiting.")
 			ya.notify({
 				title = "KDE Connect Send",
 				content = "Cannot send directories. Please select regular files only.",
 				level = "error",
 				timeout = 7,
 			})
-			return -- Exit plugin
+			return -- Exit if a directory was detected by the sync check
+		end
+		ya.dbg("[kdeconnect-send] directory_selected is false (from sync check). Proceeding.")
+
+		-- 3. Proceed only if no directory was selected and files exist
+		ya.dbg("[kdeconnect-send] Checking number of regular files.")
+		local len = #selected_files
+		ya.dbg("[kdeconnect-send] Length of selected_files (#): ", len)
+
+		if len == 0 then
+			-- This case now means either truly no regular files were selected,
+			-- or only directories were selected (and handled above),
+			-- or an error occurred in get_selection_details.
+			ya.dbg("[kdeconnect-send] Length is 0. No regular files to send.")
+			-- Check if directory_selected was false - means no files were selected at all.
+			if not directory_selected then
+				ya.notify({
+					title = "KDE Connect Send",
+					content = "No regular files selected.",
+					level = "warn",
+					timeout = 5,
+				})
+			end
+			return -- Exit cleanly
 		end
 
-		-- If no directories were found, proceed with device listing and sending
-		ya.dbg("[kdeconnect-send] No directories found in selection. Proceeding...")
+		-- If we got here, directory_selected is false and len > 0.
+		ya.dbg("[kdeconnect-send] Regular files found and no directories detected. Proceeding to device check.")
 
 		-- 4. Get KDE Connect devices (using -a flag)
-		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -a'...") -- Debug log
+		ya.dbg("[kdeconnect-send] Attempting to list KDE Connect devices with 'kdeconnect-cli -a'...")
 		local devices_output, err = run_command({ "kdeconnect-cli", "-a" }) -- Using -a flag
 
-		-- Check for errors from run_command first
 		if err then
-			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.") -- Error log
+			ya.err("[kdeconnect-send] Failed to list devices command: ", tostring(err), ". Exiting.")
 			ya.notify({
 				title = "KDE Connect Error",
-				content = "Failed to run kdeconnect-cli -a: " .. tostring(err), -- Updated error message
+				content = "Failed to run kdeconnect-cli -a: " .. tostring(err),
 				level = "error",
 				timeout = 5,
 			})
 			return
 		end
 
-		-- Check if run_command returned empty string (meaning no devices found)
-		-- This check might need adjustment based on 'kdeconnect-cli -a' output
 		if not devices_output or devices_output == "" then
-			ya.dbg("[kdeconnect-send] No available devices reported by kdeconnect-cli -a. Exiting silently.") -- Debug log
-			-- Optional: Notify user no devices found
+			ya.dbg("[kdeconnect-send] No available devices reported by kdeconnect-cli -a. Exiting silently.")
 			ya.notify({
 				title = "KDE Connect Send",
 				content = "No available KDE Connect devices found.",
@@ -198,7 +235,6 @@ return {
 			end
 		end
 
-		-- Check if *any* devices were found after parsing
 		if not has_reachable then
 			ya.dbg(
 				"[kdeconnect-send] No devices found after parsing output of 'kdeconnect-cli -a'. Exiting silently. List:\n",
@@ -272,15 +308,15 @@ return {
 			"). Starting file send loop..."
 		)
 
-		-- 8. Send files (Using selected_paths)
+		-- 8. Send files (Using selected_files list)
 		local success_count = 0
 		local error_count = 0
-		for i, file_path in ipairs(selected_paths) do -- Use selected_paths here
+		for i, file_path in ipairs(selected_files) do -- Use selected_files here
 			ya.dbg(
 				"[kdeconnect-send] Sending file ",
 				i,
 				"/",
-				#selected_paths, -- Use #selected_paths
+				#selected_files, -- Use #selected_files
 				": ",
 				file_path,
 				" to ",
@@ -303,13 +339,13 @@ return {
 
 		-- 9. Final Notification
 		local final_message =
-			string.format("Sent %d/%d files to %s.", success_count, #selected_paths, target_device_name)
+			string.format("Sent %d/%d files to %s.", success_count, #selected_files, target_device_name)
 		local final_level = "info"
 		if error_count > 0 then
 			final_message = string.format(
 				"Sent %d/%d files to %s. %d failed.",
 				success_count,
-				#selected_paths,
+				#selected_files,
 				target_device_name,
 				error_count
 			)
