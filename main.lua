@@ -68,67 +68,110 @@ local function run_command(cmd_args)
 	return output.stdout, nil
 end
 
+-- Helper function to check if a URL exists in the values of the selected map
+local function isSelected(url_to_check, selected_map)
+	if not url_to_check or not selected_map then
+		return false
+	end
+	local url_str_to_check = tostring(url_to_check) -- Compare string representations for consistency
+	for _, selected_url in pairs(selected_map) do
+		if selected_url and tostring(selected_url) == url_str_to_check then
+			return true
+		end
+	end
+	return false
+end
+
 local get_selection_details = ya.sync(function()
-	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block (Reverted Check using url.is_regular)")
+	ya.dbg("[kdeconnect-send] Entering get_selection_details sync block (Using cha via current.files)")
 	local selected_map = cx.active.selected
-	if not selected_map then
-		ya.err("[kdeconnect-send] cx.active.selected is nil!")
-		return {}, false -- Return empty table and false if selection map is nil
+	local current_files = cx.active.current.files
+
+	if not selected_map or not current_files then
+		ya.err("[kdeconnect-send] cx.active.selected or cx.active.current.files is nil!")
+		return {}, false -- Return empty if essential data is missing
+	end
+
+	-- Check if selection is empty early to potentially save iteration
+	local selection_empty = true
+	for _ in pairs(selected_map) do
+		selection_empty = false
+		break
+	end
+	if selection_empty then
+		ya.dbg("[kdeconnect-send] Selection map is empty.")
+		return {}, false
 	end
 
 	local regular_files = {}
 	local directory_selected = false
 
-	-- Use pcall to safely iterate in case pairs() or accessing selected_map fails
 	local success, err = pcall(function()
-		for idx, url in pairs(selected_map) do -- Iterate over Url objects
-			ya.dbg("[kdeconnect-send] Checking selection index: ", idx)
-			if url then
-				-- Check the is_regular property of the Url object
-				local is_regular_status = url.is_regular
-				ya.dbg("[kdeconnect-send] URL: ", tostring(url), " Is Regular: ", is_regular_status)
+		-- Iterate through the files in the current view
+		for i = 1, #current_files do
+			local file = current_files[i] -- Access fs::File object by index [cite: 15]
 
-				if is_regular_status == true then -- It's a regular file
-					local file_path = tostring(url)
-					table.insert(regular_files, file_path)
-				elseif is_regular_status == false then -- It's not a regular file (could be directory, link, etc.)
-					ya.dbg(
-						"[kdeconnect-send] Non-regular file selected (likely directory or other type): ",
-						tostring(url)
-					)
-					directory_selected = true
-					-- Optional: uncomment break if we only need to know if *any* non-regular file exists
-					-- break
-				else
-					-- is_regular might be nil if URL properties couldn't be determined
+			if file and file.url and file.cha then
+				-- Check if this file's URL is in the selected map
+				if isSelected(file.url, selected_map) then
+					ya.dbg("[kdeconnect-send] File is selected: ", tostring(file.url))
+
+					-- Now check its cha.is_dir property
+					if file.cha.is_dir == true then
+						ya.dbg("[kdeconnect-send] Selected item is a directory (cha.is_dir): ", tostring(file.url))
+						directory_selected = true
+						-- Optional: If finding one directory is enough, you could break the loop here
+						-- if you primarily care about blocking directory sends.
+						-- break
+					elseif file.cha.is_dir == false then
+						-- It's selected and not a directory, assume regular file
+						ya.dbg(
+							"[kdeconnect-send] Selected item is a regular file (cha.is_dir is false): ",
+							tostring(file.url)
+						)
+						table.insert(regular_files, tostring(file.url))
+					else
+						-- cha.is_dir might be nil (e.g., dummy file)
+						ya.warn(
+							"[kdeconnect-send] file.cha.is_dir is nil for selected file: ",
+							tostring(file.url),
+							". Treating as potential directory."
+						)
+						directory_selected = true -- Treat indeterminate as directory for safety
+					end
+				end
+			elseif file and file.url then
+				-- File exists but cha doesn't? Check if it's selected anyway.
+				if isSelected(file.url, selected_map) then
 					ya.warn(
-						"[kdeconnect-send] url.is_regular is neither true nor false (is nil?) for URL: ",
-						tostring(url),
-						". Treating as potential directory/non-regular."
+						"[kdeconnect-send] Selected file is missing 'cha' property: ",
+						tostring(file.url),
+						". Treating as potential directory."
 					)
-					directory_selected = true -- Treat indeterminate cases as non-regular to be safe
-					-- break
+					directory_selected = true -- Treat files missing 'cha' as directories for safety
 				end
 			else
-				ya.err("[kdeconnect-send] Encountered nil URL at index: ", idx)
-				-- Decide if a nil URL should be treated as an error or skipped
+				-- Handle cases where file or file.url might be nil within the loop if necessary
+				ya.warn("[kdeconnect-send] Encountered nil file or file.url at index: ", i)
 			end
 		end
 	end)
 
 	if not success then
-		ya.err("[kdeconnect-send] Error during pairs(selected_map) iteration: ", err)
-		-- Decide how to handle this: return error? return empty?
-		return {}, false -- Example: return empty, no directory detected
+		ya.err("[kdeconnect-send] Error during current_files iteration or isSelected check: ", err)
+		return {}, false -- Return empty on error
 	end
+
+	-- Add a final check: if directory_selected is true, we might not need the regular_files list depending on use case.
+	-- The current implementation returns both.
 
 	ya.dbg(
 		"[kdeconnect-send] Exiting get_selection_details sync block. Found regular files: ",
 		#regular_files,
-		" Directory/Non-regular selected: ", -- Updated log message slightly
+		" Directory selected (based on cha): ",
 		directory_selected
 	)
-	return regular_files, directory_selected -- Returns list of regular files and a flag if any non-regular file was selected
+	return regular_files, directory_selected
 end)
 
 return {
