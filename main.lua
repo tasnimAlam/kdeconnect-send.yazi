@@ -15,8 +15,8 @@ local function run_command(cmd_args)
 
 	-- Build the command correctly
 	local cmd_builder = Command(command_name)
-	if #arguments > 0 then
-		cmd_builder:args(arguments)
+	for _, arg_value in ipairs(arguments) do
+		cmd_builder:arg(arg_value)
 	end
 
 	local child, err = cmd_builder:stdout(Command.PIPED):stderr(Command.PIPED):spawn()
