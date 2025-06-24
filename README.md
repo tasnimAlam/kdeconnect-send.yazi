@@ -22,7 +22,7 @@ Send selected files to your smartphone or other devices using KDE Connect. This 
 ### Using `ya pack`
 
 ```sh
-ya pack -a Deepak22903/kdeconnect-send
+ya pack -a tasnimAlam/kdeconnect-send
 ```
 
 ### Using Git
@@ -30,7 +30,7 @@ ya pack -a Deepak22903/kdeconnect-send
 Clone the repository directly into your Yazi plugins directory:
 
 ```sh
-git clone https://github.com/Deepak22903/kdeconnect-send.yazi.git ~/.config/yazi/plugins/kdeconnect-send.yazi
+git clone https://github.com/tasnimAlam/kdeconnect-send.yazi.git ~/.config/yazi/plugins/kdeconnect-send.yazi
 ```
 
 ## Usage
